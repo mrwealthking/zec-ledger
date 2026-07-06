@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ZEC Ledger — Zcash Transaction Accounting Tool</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2e38;
+    --text: #e8e9ec;
+    --muted: #9aa0ac;
+    --accent: #f4b728;
+    --green: #4ade80;
+    --red: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 24px 16px 64px;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; }
+  h1 { font-size: 1.6rem; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); margin-bottom: 24px; font-size: 0.95rem; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 6px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  input[type="text"] {
+    flex: 1;
+    min-width: 240px;
+    background: #0d0f14;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    color: var(--text);
+    font-size: 0.95rem;
+  }
+  button {
+    background: var(--accent);
+    color: #111;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 20px;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 0.95rem;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.secondary {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+    margin-top: 16px;
+  }
+  .stat { background: #0d0f14; border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+  .stat .label { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  .stat .value { font-size: 1.3rem; font-weight: 700; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }
+  tr:hover { background: #1c202a; }
+  .in { color: var(--green); }
+  .out { color: var(--red); }
+  .mono { font-family: "SF Mono", Consolas, monospace; font-size: 0.8rem; word-break: break-all; }
+  .status { color: var(--muted); font-size: 0.9rem; margin-top: 10px; }
+  .error { color: var(--red); }
+  .footer-note { color: var(--muted); font-size: 0.8rem; margin-top: 24px; text-align: center; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ZEC Ledger</h1>
+  <div class="subtitle">A lightweight accounting tool for Zcash transparent addresses — real mainnet data, running balance, and CSV export.</div>
+
+  <div class="panel">
+    <label for="addr">Zcash transparent address (starts with t1 or t3)</label>
+    <div class="row">
+      <input type="text" id="addr" placeholder="e.g. t1KGZDBFXfKgNsPLSc2ykQygdyudBwEsRcs" />
+      <button id="loadBtn">Load Ledger</button>
+    </div>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="panel" id="summaryPanel" style="display:none;">
+    <div class="summary-grid">
+      <div class="stat"><div class="label">Current Balance</div><div class="value" id="balanceVal">—</div></div>
+      <div class="stat"><div class="label">Total Received</div><div class="value in" id="receivedVal">—</div></div>
+      <div class="stat"><div class="label">Total Sent</div><div class="value out" id="sentVal">—</div></div>
+      <div class="stat"><div class="label">Transactions</div><div class="value" id="txCountVal">—</div></div>
+    </div>
+    <div class="row" style="margin-top:16px;">
+      <button class="secondary" id="exportBtn">Export CSV</button>
+    </div>
+  </div>
+
+  <div class="panel" id="tablePanel" style="display:none;">
+    <div style="overflow-x:auto;">
+      <table>
+        <thead>
+          <tr><th>Date</th><th>Type</th><th>Amount (ZEC)</th><th>Running Balance</th><th>Txid</th></tr>
+        </thead>
+        <tbody id="txBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="footer-note">
+    Data sourced live from the Zcash mainnet via the <a href="https://blockchair.com/zcash" target="_blank">Blockchair</a> public explorer API.
+    Only transparent-address activity is shown — shielded transactions remain private by design.
+  </div>
+</div>
+
+<script>
+const BLOCKCHAIR_API = "https://api.blockchair.com/zcash";
+const ZCHAIN_API = "https://api.zcha.in/v2/mainnet";
+const statusEl = document.getElementById('status');
+const loadBtn = document.getElementById('loadBtn');
+const addrInput = document.getElementById('addr');
+let currentLedger = [];
+let currentAddress = "";
+
+function satToZec(s) {
+  return (Number(s) / 100000000);
+}
+
+function fmt(n) {
+  return n.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 8 });
+}
+
+function chunk(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+async function loadFromBlockchair(address) {
+  const dashResp = await fetch(`${BLOCKCHAIR_API}/dashboards/address/${address}?limit=100`);
+  const dashJson = await dashResp.json();
+  if (dashJson.context && dashJson.context.error) {
+    throw new Error("blockchair:" + dashJson.context.error);
+  }
+  const addrData = dashJson.data && dashJson.data[address];
+  if (!addrData) throw new Error("Address not found or has no on-chain activity yet.");
+
+  const info = addrData.address;
+  const txids = addrData.transactions || [];
+
+  if (txids.length === 0) {
+    return { balance: 0, received: 0, sent: 0, ledger: [] };
+  }
+
+  statusEl.textContent = `Fetching details for ${txids.length} transactions...`;
+  const batches = chunk(txids, 10);
+  const txDetails = {};
+  for (let i = 0; i < batches.length; i++) {
+    statusEl.textContent = `Fetching transaction details... (${i + 1}/${batches.length})`;
+    const resp = await fetch(`${BLOCKCHAIR_API}/dashboards/transactions/${batches[i].join(',')}`);
+    const json = await resp.json();
+    if (json.context && json.context.error) throw new Error("blockchair:" + json.context.error);
+    Object.assign(txDetails, json.data || {});
+  }
+
+  const rows = [];
+  for (const txid of txids) {
+    const tx = txDetails[txid];
+    if (!tx) continue;
+    const inputsFromAddr = (tx.inputs || []).filter(i => i.recipient === address);
+    const outputsToAddr = (tx.outputs || []).filter(o => o.recipient === address);
+    const spent = inputsFromAddr.reduce((sum, i) => sum + Number(i.value || 0), 0);
+    const received = outputsToAddr.reduce((sum, o) => sum + Number(o.value || 0), 0);
+    const netSat = received - spent;
+    if (netSat === 0) continue;
+    rows.push({ txid, time: tx.transaction.time, netZec: satToZec(netSat), link: `https://blockchair.com/zcash/transaction/${txid}` });
+  }
+
+  rows.sort((a, b) => new Date(a.time) - new Date(b.time));
+  let running = 0;
+  const ledger = rows.map(row => {
+    running += row.netZec;
+    return { date: row.time, type: row.netZec >= 0 ? "Received" : "Sent", amount: row.netZec, running, txid: row.txid, link: row.link };
+  });
+
+  return {
+    balance: satToZec(info.balance),
+    received: satToZec(info.received || 0),
+    sent: satToZec(info.spent || 0),
+    txCount: info.transaction_count ?? ledger.length,
+    ledger
+  };
+}
+
+async function loadFromZchain(address) {
+  const accountResp = await fetch(`${ZCHAIN_API}/accounts/${address}`);
+  if (!accountResp.ok) throw new Error("Address not found or has no on-chain activity yet.");
+  const account = await accountResp.json();
+
+  const txResp = await fetch(`${ZCHAIN_API}/accounts/${address}/recvTransactions?limit=100`);
+  const sentResp = await fetch(`${ZCHAIN_API}/accounts/${address}/sentTransactions?limit=100`);
+  const received = txResp.ok ? await txResp.json() : [];
+  const sent = sentResp.ok ? await sentResp.json() : [];
+
+  const combined = [
+    ...received.map(tx => ({ ...tx, direction: "in" })),
+    ...sent.map(tx => ({ ...tx, direction: "out" }))
+  ].sort((a, b) => a.timestamp - b.timestamp);
+
+  let running = 0;
+  const ledger = combined.map(tx => {
+    const amountZec = satToZec(Math.abs(tx.value));
+    running += tx.direction === "in" ? amountZec : -amountZec;
+    return {
+      date: new Date(tx.timestamp * 1000).toISOString().slice(0, 19).replace('T', ' '),
+      type: tx.direction === "in" ? "Received" : "Sent",
+      amount: tx.direction === "in" ? amountZec : -amountZec,
+      running,
+      txid: tx.hash,
+      link: `https://zcha.in/transactions/${tx.hash}`
+    };
+  });
+
+  return {
+    balance: satToZec(account.balance),
+    received: satToZec(account.totalRecv || 0),
+    sent: satToZec(account.totalSent || 0),
+    txCount: ledger.length,
+    ledger
+  };
+}
+
+async function loadLedger() {
+  const address = addrInput.value.trim();
+  if (!address) {
+    statusEl.textContent = "Please enter a Zcash transparent address.";
+    statusEl.className = "status error";
+    return;
+  }
+
+  loadBtn.disabled = true;
+  statusEl.className = "status";
+  statusEl.textContent = "Fetching account data from Zcash mainnet...";
+  document.getElementById('summaryPanel').style.display = "none";
+  document.getElementById('tablePanel').style.display = "none";
+
+  let result = null;
+  let lastError = null;
+
+  try {
+    result = await loadFromBlockchair(address);
+  } catch (err) {
+    lastError = err;
+    statusEl.textContent = "Primary source unavailable, trying backup source...";
+    try {
+      result = await loadFromZchain(address);
+    } catch (err2) {
+      lastError = err2;
+    }
+  }
+
+  if (!result) {
+    statusEl.className = "status error";
+    const msg = (lastError && lastError.message) || "Unknown error";
+    if (msg.includes("blacklisted")) {
+      statusEl.textContent = "Both data providers are temporarily unavailable (rate-limited). This is an external API limit, not an app error — please wait a few minutes and try again.";
+    } else {
+      statusEl.textContent = "Error: " + msg;
+    }
+    loadBtn.disabled = false;
+    return;
+  }
+
+  currentLedger = result.ledger;
+  currentAddress = address;
+
+  document.getElementById('balanceVal').textContent = fmt(result.balance) + " ZEC";
+  document.getElementById('receivedVal').textContent = fmt(result.received) + " ZEC";
+  document.getElementById('sentVal').textContent = fmt(result.sent) + " ZEC";
+  document.getElementById('txCountVal').textContent = result.txCount ?? result.ledger.length;
+
+  const tbody = document.getElementById('txBody');
+  tbody.innerHTML = "";
+  result.ledger.slice().reverse().forEach(row => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${row.date}</td>
+      <td class="${row.type === 'Received' ? 'in' : 'out'}">${row.type}</td>
+      <td class="${row.type === 'Received' ? 'in' : 'out'}">${row.amount > 0 ? '+' : ''}${fmt(row.amount)}</td>
+      <td>${fmt(row.running)}</td>
+      <td class="mono"><a href="${row.link}" target="_blank">${row.txid.slice(0,10)}...</a></td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  document.getElementById('summaryPanel').style.display = "block";
+  document.getElementById('tablePanel').style.display = "block";
+  statusEl.textContent = result.ledger.length
+    ? `Loaded ${result.ledger.length} transactions for ${address}.`
+    : "No transaction history found for this address yet.";
+  loadBtn.disabled = false;
+}
+
+function exportCSV() {
+  if (!currentLedger.length) return;
+  let csv = "Date,Type,Amount (ZEC),Running Balance,Txid\n";
+  currentLedger.forEach(row => {
+    csv += `${row.date},${row.type},${row.amount},${row.running},${row.txid}\n`;
+  });
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `zec-ledger-${currentAddress}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+loadBtn.addEventListener('click', loadLedger);
+addrInput.addEventListener('keydown', e => { if (e.key === 'Enter') loadLedger(); });
+document.getElementById('exportBtn').addEventListener('click', exportCSV);
+</script>
+</body>
+</html>
