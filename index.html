@@ -129,6 +129,12 @@
 <script>
 const BLOCKCHAIR_API = "https://api.blockchair.com/zcash";
 const ZCHAIN_API = "https://api.zcha.in/v2/mainnet";
+const CORS_PROXY = "https://api.allorigins.win/raw?url=";
+
+function proxied(url) {
+  return CORS_PROXY + encodeURIComponent(url);
+}
+
 const statusEl = document.getElementById('status');
 const loadBtn = document.getElementById('loadBtn');
 const addrInput = document.getElementById('addr');
@@ -150,7 +156,7 @@ function chunk(arr, size) {
 }
 
 async function loadFromBlockchair(address) {
-  const dashResp = await fetch(`${BLOCKCHAIR_API}/dashboards/address/${address}?limit=100`);
+  const dashResp = await fetch(proxied(`${BLOCKCHAIR_API}/dashboards/address/${address}?limit=100`));
   const dashJson = await dashResp.json();
   if (dashJson.context && dashJson.context.error) {
     throw new Error("blockchair:" + dashJson.context.error);
@@ -170,7 +176,7 @@ async function loadFromBlockchair(address) {
   const txDetails = {};
   for (let i = 0; i < batches.length; i++) {
     statusEl.textContent = `Fetching transaction details... (${i + 1}/${batches.length})`;
-    const resp = await fetch(`${BLOCKCHAIR_API}/dashboards/transactions/${batches[i].join(',')}`);
+    const resp = await fetch(proxied(`${BLOCKCHAIR_API}/dashboards/transactions/${batches[i].join(',')}`));
     const json = await resp.json();
     if (json.context && json.context.error) throw new Error("blockchair:" + json.context.error);
     Object.assign(txDetails, json.data || {});
@@ -206,12 +212,12 @@ async function loadFromBlockchair(address) {
 }
 
 async function loadFromZchain(address) {
-  const accountResp = await fetch(`${ZCHAIN_API}/accounts/${address}`);
+  const accountResp = await fetch(proxied(`${ZCHAIN_API}/accounts/${address}`));
   if (!accountResp.ok) throw new Error("Address not found or has no on-chain activity yet.");
   const account = await accountResp.json();
 
-  const txResp = await fetch(`${ZCHAIN_API}/accounts/${address}/recvTransactions?limit=100`);
-  const sentResp = await fetch(`${ZCHAIN_API}/accounts/${address}/sentTransactions?limit=100`);
+  const txResp = await fetch(proxied(`${ZCHAIN_API}/accounts/${address}/recvTransactions?limit=100`));
+  const sentResp = await fetch(proxied(`${ZCHAIN_API}/accounts/${address}/sentTransactions?limit=100`));
   const received = txResp.ok ? await txResp.json() : [];
   const sent = sentResp.ok ? await sentResp.json() : [];
 
@@ -314,6 +320,10 @@ async function loadLedger() {
   loadBtn.disabled = false;
 }
 
+loadBtn.addEventListener('click', loadLedger);
+addrInput.addEventListener('keydown', e => { if (e.key === 'Enter') loadLedger(); });
+document.getElementById('exportBtn').addEventListener('click', exportCSV);
+
 function exportCSV() {
   if (!currentLedger.length) return;
   let csv = "Date,Type,Amount (ZEC),Running Balance,Txid\n";
@@ -328,10 +338,6 @@ function exportCSV() {
   a.click();
   URL.revokeObjectURL(url);
 }
-
-loadBtn.addEventListener('click', loadLedger);
-addrInput.addEventListener('keydown', e => { if (e.key === 'Enter') loadLedger(); });
-document.getElementById('exportBtn').addEventListener('click', exportCSV);
 </script>
 </body>
 </html>
